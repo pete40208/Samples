@@ -1,0 +1,116 @@
+You've provided two images of your SQL query. The first image shows a more complete, but problematic, version of the SQL, while the second image shows a much shorter, working query in your RStudio console.
+Let's focus on fixing the longer, more complex SQL query from the first image, as that seems to be where the main issues are. The "FROM keyword not found where expected" error often comes from incorrect comma usage, misplaced FROM clauses, or subqueries not being properly integrated.
+Here's a breakdown of the issues and a corrected version of your SQL query.
+Analysis of the problematic query (from the first image):
+ * Missing Commas in SELECT List: Several columns/subqueries are directly adjacent without a comma separator.
+ * Misplaced FROM and JOINs: The FROM BHODOBOP.LNM_HIST c, BHODOBOP.APPL_LKUP_DTL d, ... appears to be the main FROM clause, but it's preceded by columns and then followed by other columns that should also be part of the SELECT list.
+ * Multiple SELECT statements without UNION or WITH: You have several SELECT statements that are just strung together. Each SELECT statement needs a FROM clause, and if they're meant to be part of a single result set, they need to be combined using UNION ALL or defined as Common Table Expressions (CTEs) using a WITH clause.
+ * WHERE clause for PTR: The WHERE clause for PTR seems to be outside the main WHERE clause and not properly integrated.
+ * Unclear purpose of (case when CMPT_PRC_RT is not null then 1 CMPT_PRC_RT ): This looks like it's trying to define a column, but the syntax 1 CMPT_PRC_RT is incorrect. It should be 1 or CMPT_PRC_RT if the condition is met.
+ * PTR calculation: The PTR calculation has h.ln_dlry_fnn_ln_id = '155371-241470008' and h.ln_dlry_fnn_ln_id = '40532384063' hardcoded. This suggests these might be specific loan_num values you were testing, but in the context of a Shiny app, this will be dynamic.
+Assumptions for the fixed query:
+ * Main Tables: I'm assuming your main data comes from BHODOBOP.LNM_HIST (aliased as h), and BHODOBOP.APPL_LKUP_DTL (aliased as d). You also reference CMPT_LOAN_DTL_FEAT (aliased as CD) and CMPT_AGMT_ID (aliased as N).
+ * Loan Number Column: I'm assuming the column you want to filter by based on the loan_num input is h.LN_DLRY_FNN_LN_ID.
+ * Remittance Calculation: I'm inferring from '0' AND APPL.LKUP_DTL_CD = C.LNM_PMT_TYP_CD that Remittance is a CASE statement.
+Fixed SQL Query for your R Shiny app:
+This query uses Common Table Expressions (CTEs) (WITH clause) to make it more readable and correct the syntax errors.
+sql_query <- "
+WITH
+  -- CTE for Commitype
+  Commitype AS (
+    SELECT
+      APPL.CMPT_EXCN_TYP_CD AS related_key, -- Assuming a key to join back to the main table
+      APPL.CMPT_LGCY_ID AS \"Commitype\"
+    FROM BHODOBOP.APPL_LKUP_DTL APPL
+    WHERE APPL.APPL_LKUP_CATG_TYP_CD = '40'
+  ),
+  -- CTE for Commited Thru
+  CommitedThru AS (
+    SELECT
+      APPL.TRNSP_SRC_CD AS related_key, -- Assuming a key to join back to the main table
+      APPL.APPL_LKUP_DTL_CD AS \"Commited Thru\"
+    FROM BHODOBOP.APPL_LKUP_DTL APPL
+    WHERE APPL.APPL_LKUP_CATG_TYP_CD = '350'
+  ),
+  -- CTE for SFC (Service Fee Component)
+  SFC_Data AS (
+    SELECT
+      CD.CMPT_AGMT_ID,
+      LISTAGG(CASE WHEN CD.CMPT_FEAT_TYP_CD = '36' THEN CD.CMPT_FEAT_CD END, ',') WITHIN GROUP (ORDER BY CD.CMPT_FEAT_CD) AS SFC
+    FROM CMPT_LOAN_DTL_FEAT CD
+    LEFT OUTER JOIN CMPT_AGMT_ID N ON N.CMPT_AGMT_ID = CD.CMPT_AGMT_ID -- Verify this join condition. It looks like N.CMPT_AGMT_ID and CD.CMPT_AGMT_ID are the same column.
+    WHERE N.CMPT_AGMT_ID IS NOT NULL -- This WHERE clause is redundant if the JOIN is working correctly. Consider if N.CMPT_AGMT_ID is always equal to CD.CMPT_AGMT_ID
+    GROUP BY CD.CMPT_AGMT_ID
+  ),
+  -- CTE for SFClist (Service Fee Component List)
+  SFClist_Data AS (
+    SELECT
+      CD.CMPT_AGMT_ID,
+      LISTAGG(CASE WHEN CD.CMPT_FEAT_TYP_CD = '37' THEN CD.CMPT_FEAT_CD END, ',') WITHIN GROUP (ORDER BY CD.CMPT_FEAT_CD) AS SFclist
+    FROM CMPT_LOAN_DTL_FEAT CD
+    LEFT OUTER JOIN CMPT_AGMT_ID N ON N.CMPT_AGMT_ID = CD.CMPT_AGMT_ID -- Verify this join condition again.
+    WHERE N.CMPT_AGMT_ID IS NOT NULL -- This WHERE clause is redundant if the JOIN is working correctly.
+    GROUP BY CD.CMPT_AGMT_ID
+  )
+-- Main Query
+SELECT
+  h.CMPT_LGCY_ID,
+  d.APPL_LKUP_DTL_DESC AS \"Product\", -- Assuming d is for APPL_LKUP_DTL
+  (SELECT T1.\"Commitype\" FROM Commitype T1 WHERE T1.related_key = h.CMPT_EXCN_TYP_CD) AS \"Commit Type\", -- Join to CTE
+  (SELECT T2.\"Commited Thru\" FROM CommitedThru T2 WHERE T2.related_key = h.TRNSP_SRC_CD) AS \"Commited Thru\", -- Join to CTE
+  d_seller.APPL_LKUP_DTL_DESC AS \"Seller\", -- Alias d for BHODOBOP.APPL_LKUP_DTL for seller
+  h.CMPT_ACNT_ACY_DT AS \"Commit Dt\",
+  h.CMPT_ORIG_EXPR_DT AS \"Expirc\",
+  h.CMPT_ORIG_ORIG_AMT AS \"Committed Amt\",
+  h.CMPT_ORIG_APPL_DTL_DESC AS \"Product\",
+  h.CMPT_BSE_FEE_RT AS \"Servicing\",
+  h.CMPT_PART_NET_GUAR_RT AS \"NetGfee\",
+  (CASE
+    WHEN h.CMPT_BSE_FEE_RT IS NOT NULL THEN '0'
+    ELSE d_remit.APPL_LKUP_DTL_CD -- Assuming d_remit is for APPL_LKUP_DTL based on C.LNM_PMT_TYP_CD
+  END) AS \"Remittance\",
+  SFC_Data.SFC AS \"SFC\", -- From CTE
+  SFClist_Data.SFclist AS \"SFclist\", -- From CTE
+  CASE
+    WHEN h.CMPT_PRC_RT IS NOT NULL THEN h.CMPT_PRC_RT
+    WHEN h.CMPT_PRC_RT IS NULL AND h.CMPT_PRC_ADJ_BSE_PRC_RT = '0' THEN 0
+    ELSE h.CMPT_PRC_RT -- Or whatever default/other logic
+  END AS \"PTR\",
+  CASE
+    WHEN d_com.APPL_LKUP_CATG_TYP_CD = '200' AND d_com.APPL_LKUP_DTL_CD = h.CMPT_EXPR_TYP_CD THEN d_com.APPL_LKUP_DTL_DESC
+    ELSE NULL -- Or a default value if no match
+  END AS \"COM PER\",
+  h.LN_DLRY_FNN_LN_ID AS \"PriceAidDate\" -- This column seems to be used as a loan number, confirm its name.
+FROM
+  BHODOBOP.LNM_HIST h
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d ON h.LNM_PROD_CD = d.APPL_LKUP_DTL_CD AND d.APPL_LKUP_CATG_TYP_CD = 'PRODUCT_TYPE_CATEGORY' -- Adjust JOIN condition for product
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d_seller ON h.SELR_PRTY_ROLE_ID = d_seller.APPL_LKUP_DTL_ID AND d_seller.APPL_LKUP_CATG_TYP_CD = 'SELLER_CATEGORY' -- Adjust JOIN for seller
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d_remit ON h.LNM_PMT_TYP_CD = d_remit.APPL_LKUP_DTL_CD AND d_remit.APPL_LKUP_CATG_TYP_CD = 'PAYMENT_TYPE_CATEGORY' -- Adjust JOIN for remittance
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d_com ON h.CMPT_EXPR_TYP_CD = d_com.APPL_LKUP_DTL_CD AND d_com.APPL_LKUP_CATG_TYP_CD = '200'
+LEFT JOIN SFC_Data ON h.CMPT_AGMT_ID = SFC_Data.CMPT_AGMT_ID -- Assuming CMPT_AGMT_ID is the join key
+LEFT JOIN SFClist_Data ON h.CMPT_AGMT_ID = SFClist_Data.CMPT_AGMT_ID -- Assuming CMPT_AGMT_ID is the join key
+WHERE
+  h.LN_DLRY_FNN_LN_ID = :loan_num -- This is where the R input will go
+"
+
+Key Changes and Points to Verify:
+ * Commas: Added commas between all selected columns.
+ * CTEs (WITH clause): All complex subqueries (for Commitype, Commited Thru, SFC, SFclist) are now defined as CTEs at the beginning. This greatly improves readability and maintainability.
+ * Main FROM and JOINs: The primary FROM clause is FROM BHODOBOP.LNM_HIST h. All other necessary tables are LEFT JOINed to h.
+ * Join Conditions:
+   * For Commitype and CommitedThru, I've assumed there's a related_key column in your main table h that links to CMPT_EXCN_TYP_CD and TRNSP_SRC_CD in APPL_LKUP_DTL. You will need to verify and correct these join conditions (T1.related_key = h.CMPT_EXCN_TYP_CD) based on how APPL_LKUP_DTL actually relates to LNM_HIST.
+   * For SFC_Data and SFClist_Data, I've assumed h.CMPT_AGMT_ID is the correct join key.
+   * For d_seller, d_remit, d_com, I've added example join conditions using APPL_LKUP_CATG_TYP_CD. You need to replace 'PRODUCT_TYPE_CATEGORY', 'SELLER_CATEGORY', 'PAYMENT_TYPE_CATEGORY' with the actual category codes from your APPL_LKUP_DTL table.
+ * PTR calculation: Simplified the CASE statement for PTR.
+ * Remittance calculation: Re-implemented Remittance as a CASE expression. I assumed d_remit is the alias for APPL_LKUP_DTL related to payment type.
+ * Parameterized Query: The WHERE h.LN_DLRY_FNN_LN_ID = :loan_num uses a placeholder :loan_num. In your R Shiny app, you will pass the input$loanNumber value to dbGetQuery using the params argument, e.g.:
+   results <- dbGetQuery(conOracle, sql_query, params = list(loan_num = loan_num))
+
+ * Aliasing: Used aliases (h, d, CD, N, T1, T2) consistently for readability.
+Before running, you MUST:
+ * Replace placeholder values:
+   * 'PRODUCT_TYPE_CATEGORY', 'SELLER_CATEGORY', 'PAYMENT_TYPE_CATEGORY' with your actual category codes for the APPL_LKUP_DTL table.
+   * Verify the related_key in Commitype and CommitedThru CTEs and the join conditions for these CTEs.
+   * Confirm h.LN_DLRY_FNN_LN_ID is indeed the column you want to filter by loan number.
+ * Test the SQL in a database client: Before putting it into R, copy this SQL directly into an Oracle SQL client (like SQL Developer, DBeaver, or SQL*Plus) and replace :loan_num with an actual loan number. Run it to ensure it executes without errors and returns the expected data. This will help isolate SQL issues from R issues.
+This revised query should resolve the syntax errors and provide a more robust structure for your R Shiny application.
