@@ -1,0 +1,238 @@
+Okay, I'll integrate the corrected, complex SQL query into an R Shiny application.
+Important Reminders Before You Run:
+ * Database Credentials: You MUST replace the placeholder database credentials (db_user, db_password, db_dsn) with your actual Oracle database username, password, and TNS alias/connection string.
+ * SQL Query Customization:
+   * Crucially, verify and update the placeholder values in the SQL query itself. These include:
+     * 'PRODUCT_TYPE_CATEGORY', 'SELLER_CATEGORY', 'PAYMENT_TYPE_CATEGORY' for the APPL_LKUP_DTL joins.
+     * The related_key logic for Commitype and CommitedThru CTEs and their join conditions.
+     * The CMPT_AGMT_ID join keys for SFC_Data and SFClist_Data.
+   * Double-check the WHERE h.LN_DLRY_FNN_LN_ID = :loan_num line. Make sure h.LN_DLRY_FNN_LN_ID is the actual column name in your BHODOBOP.LNM_HIST table that stores the loan number you're searching for.
+ * Oracle Client: Ensure you have the Oracle Instant Client installed and configured correctly on the machine where the Shiny app will run, so that Roracle can connect.
+ * Security: For a production environment, avoid hardcoding database credentials directly in app.R. Use environment variables or a more secure configuration management approach.
+R Shiny App Code (app.R)
+Create a file named app.R and paste the following code into it:
+# Install packages if you haven't already
+# install.packages(c("shiny", "Roracle", "DBI"))
+
+library(shiny)
+library(Roracle) # Or your specific database package, e.g., RPostgres, odbc
+library(DBI)
+
+# --- Database Connection Details (REPLACE WITH YOUR OWN) ---
+db_user <- Sys.getenv("DB_USER") # Good practice to use environment variables
+db_password <- Sys.getenv("DB_PASSWORD") # Set these before running the app
+db_dsn <- Sys.getenv("DB_DSN") # e.g., "ORCL", "localhost:1521/pdb1", or a TNS alias
+
+# Fallback for local testing if env vars are not set
+if (db_user == "") db_user <- "your_db_username"
+if (db_password == "") db_password <- "your_db_password"
+if (db_dsn == "") db_dsn <- "your_db_tns_alias_or_connection_string"
+
+
+# --- SQL Query ---
+# IMPORTANT: Review and customize the placeholders in this SQL query
+#            to match your actual database schema and logic!
+sql_query <- "
+WITH
+  -- CTE for Commitype
+  Commitype AS (
+    SELECT
+      APPL.CMPT_EXCN_TYP_CD AS related_key, -- Assuming a key to join back to the main table
+      APPL.CMPT_LGCY_ID AS \"Commitype\"
+    FROM BHODOBOP.APPL_LKUP_DTL APPL
+    WHERE APPL.APPL_LKUP_CATG_TYP_CD = '40'
+  ),
+  -- CTE for Commited Thru
+  CommitedThru AS (
+    SELECT
+      APPL.TRNSP_SRC_CD AS related_key, -- Assuming a key to join back to the main table
+      APPL.APPL_LKUP_DTL_CD AS \"Commited Thru\"
+    FROM BHODOBOP.APPL_LKUP_DTL APPL
+    WHERE APPL.APPL_LKUP_CATG_TYP_CD = '350'
+  ),
+  -- CTE for SFC (Service Fee Component)
+  SFC_Data AS (
+    SELECT
+      CD.CMPT_AGMT_ID,
+      LISTAGG(CASE WHEN CD.CMPT_FEAT_TYP_CD = '36' THEN CD.CMPT_FEAT_CD END, ',') WITHIN GROUP (ORDER BY CD.CMPT_FEAT_CD) AS SFC
+    FROM CMPT_LOAN_DTL_FEAT CD
+    LEFT OUTER JOIN CMPT_AGMT_ID N ON N.CMPT_AGMT_ID = CD.CMPT_AGMT_ID
+    WHERE N.CMPT_AGMT_ID IS NOT NULL
+    GROUP BY CD.CMPT_AGMT_ID
+  ),
+  -- CTE for SFClist (Service Fee Component List)
+  SFClist_Data AS (
+    SELECT
+      CD.CMPT_AGMT_ID,
+      LISTAGG(CASE WHEN CD.CMPT_FEAT_TYP_CD = '37' THEN CD.CMPT_FEAT_CD END, ',') WITHIN GROUP (ORDER BY CD.CMPT_FEAT_CD) AS SFclist
+    FROM CMPT_LOAN_DTL_FEAT CD
+    LEFT OUTER JOIN CMPT_AGMT_ID N ON N.CMPT_AGMT_ID = CD.CMPT_AGMT_ID
+    WHERE N.CMPT_AGMT_ID IS NOT NULL
+    GROUP BY CD.CMPT_AGMT_ID
+  )
+-- Main Query
+SELECT
+  h.CMPT_LGCY_ID,
+  d.APPL_LKUP_DTL_DESC AS \"Product\",
+  (SELECT T1.\"Commitype\" FROM Commitype T1 WHERE T1.related_key = h.CMPT_EXCN_TYP_CD) AS \"Commit Type\",
+  (SELECT T2.\"Commited Thru\" FROM CommitedThru T2 WHERE T2.related_key = h.TRNSP_SRC_CD) AS \"Commited Thru\",
+  d_seller.APPL_LKUP_DTL_DESC AS \"Seller\",
+  h.CMPT_ACNT_ACY_DT AS \"Commit Dt\",
+  h.CMPT_ORIG_EXPR_DT AS \"Expirc\",
+  h.CMPT_ORIG_ORIG_AMT AS \"Committed Amt\",
+  h.CMPT_ORIG_APPL_DTL_DESC AS \"Product\",
+  h.CMPT_BSE_FEE_RT AS \"Servicing\",
+  h.CMPT_PART_NET_GUAR_RT AS \"NetGfee\",
+  (CASE
+    WHEN h.CMPT_BSE_FEE_RT IS NOT NULL THEN '0'
+    ELSE d_remit.APPL_LKUP_DTL_CD
+  END) AS \"Remittance\",
+  SFC_Data.SFC AS \"SFC\",
+  SFClist_Data.SFclist AS \"SFclist\",
+  CASE
+    WHEN h.CMPT_PRC_RT IS NOT NULL THEN h.CMPT_PRC_RT
+    WHEN h.CMPT_PRC_RT IS NULL AND h.CMPT_PRC_ADJ_BSE_PRC_RT = '0' THEN 0
+    ELSE h.CMPT_PRC_RT -- Or whatever default/other logic
+  END AS \"PTR\",
+  CASE
+    WHEN d_com.APPL_LKUP_CATG_TYP_CD = '200' AND d_com.APPL_LKUP_DTL_CD = h.CMPT_EXPR_TYP_CD THEN d_com.APPL_LKUP_DTL_DESC
+    ELSE NULL
+  END AS \"COM PER\",
+  h.LN_DLRY_FNN_LN_ID AS \"PriceAidDate\"
+FROM
+  BHODOBOP.LNM_HIST h
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d ON h.LNM_PROD_CD = d.APPL_LKUP_DTL_CD AND d.APPL_LKUP_CATG_TYP_CD = 'PRODUCT_TYPE_CATEGORY' -- Customize category type
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d_seller ON h.SELR_PRTY_ROLE_ID = d_seller.APPL_LKUP_DTL_ID AND d_seller.APPL_LKUP_CATG_TYP_CD = 'SELLER_CATEGORY' -- Customize category type
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d_remit ON h.LNM_PMT_TYP_CD = d_remit.APPL_LKUP_DTL_CD AND d_remit.APPL_LKUP_CATG_TYP_CD = 'PAYMENT_TYPE_CATEGORY' -- Customize category type
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d_com ON h.CMPT_EXPR_TYP_CD = d_com.APPL_LKUP_DTL_CD AND d_com.APPL_LKUP_CATG_TYP_CD = '200'
+LEFT JOIN SFC_Data ON h.CMPT_AGMT_ID = SFC_Data.CMPT_AGMT_ID
+LEFT JOIN SFClist_Data ON h.CMPT_AGMT_ID = SFClist_Data.CMPT_AGMT_ID
+WHERE
+  h.LN_DLRY_FNN_LN_ID = :loan_num
+"
+
+# --- Define UI ---
+ui <- fluidPage(
+  titlePanel("Loan Details Viewer"),
+
+  sidebarLayout(
+    sidebarPanel(
+      textInput("loanNumber", "Enter Loan Number:", value = ""),
+      actionButton("submitBtn", "Retrieve Details"),
+      hr(), # Horizontal line for separation
+      h4("Message:"),
+      textOutput("message") # For displaying success/error messages
+    ),
+
+    mainPanel(
+      h3("Loan Details:"),
+      # Display the results in a table
+      tableOutput("loanResults")
+    )
+  )
+)
+
+# --- Define Server Logic ---
+server <- function(input, output, session) {
+
+  # Reactive values to store the query result and messages
+  loan_data <- reactiveVal(NULL)
+  message_text <- reactiveVal("")
+
+  # Observe the action button click
+  observeEvent(input$submitBtn, {
+    # Ensure loan number is not empty and is a valid character string
+    req(input$loanNumber)
+    if (!is.character(input$loanNumber) || nchar(trimws(input$loanNumber)) == 0) {
+      message_text("Please enter a valid loan number.")
+      loan_data(NULL)
+      return()
+    }
+
+    loan_num <- trimws(input$loanNumber) # Trim whitespace from input
+
+    # Clear previous results/messages
+    loan_data(NULL)
+    message_text("Retrieving data...")
+
+    # Establish database connection and execute query
+    con <- NULL
+    results <- NULL
+    tryCatch({
+      con <- dbConnect(
+        Roracle::Oracle(),
+        username = db_user,
+        password = db_password,
+        dbname = db_dsn
+      )
+
+      # Execute the query with the loan number as a parameter
+      results <- dbGetQuery(con, sql_query, params = list(loan_num = loan_num))
+
+      if (is.data.frame(results) && nrow(results) > 0) {
+        loan_data(results)
+        message_text(paste("Successfully retrieved details for Loan Number:", loan_num))
+      } else {
+        loan_data(NULL) # No results found
+        message_text(paste("No details found for Loan Number:", loan_num))
+      }
+
+    }, error = function(e) {
+      message_text(paste("Database Error: ", e$message))
+      warning("Database connection or query failed: ", e$message)
+      loan_data(NULL)
+    }, finally = {
+      if (!is.null(con) && dbIsValid(con)) {
+        dbDisconnect(con)
+      }
+    })
+  })
+
+  # Render the table output
+  output$loanResults <- renderTable({
+    # Only render if loan_data has content
+    if (!is.null(loan_data())) {
+      loan_data()
+    } else {
+      NULL # Return NULL to hide the table if no data
+    }
+  }, striped = TRUE, bordered = TRUE, hover = TRUE, na = "") # Add styling options
+
+  # Render the message output
+  output$message <- renderText({
+    message_text()
+  })
+
+}
+
+# --- Run the application ---
+shinyApp(ui = ui, server = server)
+
+How to Run This Application:
+ * Save: Save the code above into a file named app.R in a new directory (e.g., loan_app).
+ * Set Environment Variables (Recommended):
+   Before launching R or RStudio, you can set environment variables for your database credentials. This is more secure than hardcoding.
+   * On Windows:
+     setx DB_USER "your_db_username"
+setx DB_PASSWORD "your_db_password"
+setx DB_DSN "your_db_tns_alias_or_connection_string"
+
+     (You might need to restart RStudio after setting these for them to take effect).
+   * On macOS/Linux (in your shell profile, e.g., ~/.bashrc, ~/.zshrc):
+     export DB_USER="your_db_username"
+export DB_PASSWORD="your_db_password"
+export DB_DSN="your_db_tns_alias_or_connection_string"
+
+     (Then run source ~/.bashrc or source ~/.zshrc).
+   * Alternatively (less secure, for quick testing): Directly modify the db_user, db_password, db_dsn lines in app.R with your hardcoded values.
+ * Install Packages: If you haven't yet, install the necessary R packages:
+   install.packages(c("shiny", "Roracle", "DBI"))
+
+ * Database Client/Driver: Ensure the Oracle Instant Client is correctly installed and configured on your system for Roracle to function. This typically involves setting TNS_ADMIN if you're using tnsnames.ora.
+ * Run the App:
+   * Open RStudio.
+   * Navigate to the directory where you saved app.R.
+   * Open app.R in the editor.
+   * Click the "Run App" button in the RStudio toolbar.
+   * Or, in the R console, run: shiny::runApp("loan_app") (replace "loan_app" with your directory name).
+The app will open in your browser or RStudio's viewer. Enter a loan number and click "Retrieve Details" to see the results from your Oracle database!
