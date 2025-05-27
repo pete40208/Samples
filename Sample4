@@ -1,0 +1,240 @@
+You are absolutely correct! My apologies. I misinterpreted your previous images, where Roracle was present in some console outputs or code snippets. It's a common package for Oracle, but if it's not installing for you, that's a key piece of information.
+The Roracle package can sometimes be tricky to install because it requires the Oracle Instant Client and its associated development libraries to be present and correctly configured on your system before R can compile and install it. If those prerequisites aren't met, the installation will fail.
+The most common and robust alternative for connecting to Oracle databases from R now is the odbc package in conjunction with an ODBC driver for Oracle.
+Here's how to set it up and what changes you'll need in your R Shiny code:
+Connecting to Oracle using odbc package (Recommended)
+Step 1: Install ODBC Driver for Oracle
+This is the most critical step and happens outside of R. You need an ODBC driver that allows your operating system to connect to Oracle.
+ * For Windows:
+   * Oracle Instant Client with ODBC Package: This is the most common approach. Download the "Basic" and "ODBC" packages for your Windows architecture (32-bit or 64-bit) from the Oracle Instant Client downloads page. Extract them into the same directory. Then, run odbc_install.exe (found in the extracted ODBC package) to register the driver.
+   * Microsoft ODBC Driver for Oracle (older, not recommended for new development): Windows used to have a built-in one, but it's outdated.
+ * For Linux/macOS:
+   * You'll typically use a driver like FreeTDS (for SQL Server/Sybase but sometimes configured for Oracle) or ODBC Driver for Oracle (from Oracle) with a driver manager like unixODBC. This is more involved and specific to your OS. You'd install unixODBC and then the Oracle ODBC driver.
+Step 2: Create an ODBC DSN (Data Source Name) (Optional but Recommended)
+Once the driver is installed, you can create a DSN. This is a named configuration that stores your connection details, so your R code (or any other application) just needs to reference the DSN name.
+ * On Windows: Go to "ODBC Data Source Administrator" (search for it in the Start Menu).
+   * Go to the "System DSN" tab.
+   * Click "Add..."
+   * Select your Oracle ODBC Driver (e.g., "Oracle in instantclient_19_X" or similar).
+   * Follow the wizard to give your DSN a name (e.g., MyOracleDSN), provide the TNS Service Name or Host/Port/Service Name/SID, and test the connection.
+Step 3: Modify Your R Shiny Code to use odbc
+Now, let's update your app.R code.
+# install.packages(c("shiny", "odbc", "DBI", "dplyr")) # Uncomment and run if you don't have these packages
+library(shiny)
+library(odbc) # The replacement for Roracle
+library(DBI)
+library(dplyr) # Often useful for data manipulation, though not strictly required here
+
+# --- Database Connection Details ---
+# You'll use your DSN name if you created one, or direct connection details.
+# Example using DSN (recommended):
+# db_dsn_name <- Sys.getenv("ODBC_DSN_NAME", "MyOracleDSN") # Default to "MyOracleDSN" if env var not set
+
+# Example using direct connection string (if no DSN or specific driver needs)
+db_driver <- "Oracle in instantclient_19_X" # IMPORTANT: Replace with the exact name of your installed Oracle ODBC driver
+db_host <- "your_oracle_host"             # e.g., "localhost"
+db_port <- 1521                           # e.g., 1521
+db_service_name <- "your_oracle_service_name" # e.g., "ORCLPDB1" or SID like "XE"
+db_user <- Sys.getenv("DB_USER", "your_db_username")
+db_password <- Sys.getenv("DB_PASSWORD", "your_db_password")
+
+
+# --- SQL Query (Remains the same as fixed previously) ---
+# IMPORTANT: Review and customize the placeholders in this SQL query
+#            to match your actual database schema and logic!
+sql_query <- "
+WITH
+  -- CTE for Commitype
+  Commitype AS (
+    SELECT
+      APPL.CMPT_EXCN_TYP_CD AS related_key,
+      APPL.CMPT_LGCY_ID AS \"Commitype\"
+    FROM BHODOBOP.APPL_LKUP_DTL APPL
+    WHERE APPL.APPL_LKUP_CATG_TYP_CD = '40'
+  ),
+  -- CTE for Commited Thru
+  CommitedThru AS (
+    SELECT
+      APPL.TRNSP_SRC_CD AS related_key,
+      APPL.APPL_LKUP_DTL_CD AS \"Commited Thru\"
+    FROM BHODOBOP.APPL_LKUP_DTL APPL
+    WHERE APPL.APPL_LKUP_CATG_TYP_CD = '350'
+  ),
+  -- CTE for SFC (Service Fee Component)
+  SFC_Data AS (
+    SELECT
+      CD.CMPT_AGMT_ID,
+      LISTAGG(CASE WHEN CD.CMPT_FEAT_TYP_CD = '36' THEN CD.CMPT_FEAT_CD END, ',') WITHIN GROUP (ORDER BY CD.CMPT_FEAT_CD) AS SFC
+    FROM CMPT_LOAN_DTL_FEAT CD
+    LEFT OUTER JOIN CMPT_AGMT_ID N ON N.CMPT_AGMT_ID = CD.CMPT_AGMT_ID
+    WHERE N.CMPT_AGMT_ID IS NOT NULL
+    GROUP BY CD.CMPT_AGMT_ID
+  ),
+  -- CTE for SFClist (Service Fee Component List)
+  SFClist_Data AS (
+    SELECT
+      CD.CMPT_AGMT_ID,
+      LISTAGG(CASE WHEN CD.CMPT_FEAT_TYP_CD = '37' THEN CD.CMPT_FEAT_CD END, ',') WITHIN GROUP (ORDER BY CD.CMPT_FEAT_CD) AS SFclist
+    FROM CMPT_LOAN_DTL_FEAT CD
+    LEFT OUTER JOIN CMPT_AGMT_ID N ON N.CMPT_AGMT_ID = CD.CMPT_AGMT_ID
+    WHERE N.CMPT_AGMT_ID IS NOT NULL
+    GROUP BY CD.CMPT_AGMT_ID
+  )
+-- Main Query
+SELECT
+  h.CMPT_LGCY_ID,
+  d.APPL_LKUP_DTL_DESC AS \"Product\",
+  (SELECT T1.\"Commitype\" FROM Commitype T1 WHERE T1.related_key = h.CMPT_EXCN_TYP_CD) AS \"Commit Type\",
+  (SELECT T2.\"Commited Thru\" FROM CommitedThru T2 WHERE T2.related_key = h.TRNSP_SRC_CD) AS \"Commited Thru\",
+  d_seller.APPL_LKUP_DTL_DESC AS \"Seller\",
+  h.CMPT_ACNT_ACY_DT AS \"Commit Dt\",
+  h.CMPT_ORIG_EXPR_DT AS \"Expirc\",
+  h.CMPT_ORIG_ORIG_AMT AS \"Committed Amt\",
+  h.CMPT_ORIG_APPL_DTL_DESC AS \"Product\",
+  h.CMPT_BSE_FEE_RT AS \"Servicing\",
+  h.CMPT_PART_NET_GUAR_RT AS \"NetGfee\",
+  (CASE
+    WHEN h.CMPT_BSE_FEE_RT IS NOT NULL THEN '0'
+    ELSE d_remit.APPL_LKUP_DTL_CD
+  END) AS \"Remittance\",
+  SFC_Data.SFC AS \"SFC\",
+  SFClist_Data.SFclist AS \"SFclist\",
+  CASE
+    WHEN h.CMPT_PRC_RT IS NOT NULL THEN h.CMPT_PRC_RT
+    WHEN h.CMPT_PRC_RT IS NULL AND h.CMPT_PRC_ADJ_BSE_PRC_RT = '0' THEN 0
+    ELSE h.CMPT_PRC_RT
+  END AS \"PTR\",
+  CASE
+    WHEN d_com.APPL_LKUP_CATG_TYP_CD = '200' AND d_com.APPL_LKUP_DTL_CD = h.CMPT_EXPR_TYP_CD THEN d_com.APPL_LKUP_DTL_DESC
+    ELSE NULL
+  END AS \"COM PER\",
+  h.LN_DLRY_FNN_LN_ID AS \"PriceAidDate\"
+FROM
+  BHODOBOP.LNM_HIST h
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d ON h.LNM_PROD_CD = d.APPL_LKUP_DTL_CD AND d.APPL_LKUP_CATG_TYP_CD = 'PRODUCT_TYPE_CATEGORY'
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d_seller ON h.SELR_PRTY_ROLE_ID = d_seller.APPL_LKUP_DTL_ID AND d_seller.APPL_LKUP_CATG_TYP_CD = 'SELLER_CATEGORY'
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d_remit ON h.LNM_PMT_TYP_CD = d_remit.APPL_LKUP_DTL_CD AND d_remit.APPL_LKUP_CATG_TYP_CD = 'PAYMENT_TYPE_CATEGORY'
+LEFT JOIN BHODOBOP.APPL_LKUP_DTL d_com ON h.CMPT_EXPR_TYP_CD = d_com.APPL_LKUP_DTL_CD AND d_com.APPL_LKUP_CATG_TYP_CD = '200'
+LEFT JOIN SFC_Data ON h.CMPT_AGMT_ID = SFC_Data.CMPT_AGMT_ID
+LEFT JOIN SFClist_Data ON h.CMPT_AGMT_ID = SFClist_Data.CMPT_AGMT_ID
+WHERE
+  h.LN_DLRY_FNN_LN_ID = ?" # ODBC uses '?' as placeholder
+"
+
+# --- Define UI ---
+ui <- fluidPage(
+  titlePanel("Loan Details Viewer"),
+
+  sidebarLayout(
+    sidebarPanel(
+      textInput("loanNumber", "Enter Loan Number:", value = ""),
+      actionButton("submitBtn", "Retrieve Details"),
+      hr(), # Horizontal line for separation
+      h4("Message:"),
+      textOutput("message") # For displaying success/error messages
+    ),
+
+    mainPanel(
+      h3("Loan Details:"),
+      # Display the results in a table
+      tableOutput("loanResults")
+    )
+  )
+)
+
+# --- Define Server Logic ---
+server <- function(input, output, session) {
+
+  # Reactive values to store the query result and messages
+  loan_data <- reactiveVal(NULL)
+  message_text <- reactiveVal("")
+
+  # Observe the action button click
+  observeEvent(input$submitBtn, {
+    # Ensure loan number is not empty and is a valid character string
+    req(input$loanNumber)
+    if (!is.character(input$loanNumber) || nchar(trimws(input$loanNumber)) == 0) {
+      message_text("Please enter a valid loan number.")
+      loan_data(NULL)
+      return()
+    }
+
+    loan_num <- trimws(input$loanNumber) # Trim whitespace from input
+
+    # Clear previous results/messages
+    loan_data(NULL)
+    message_text("Retrieving data...")
+
+    # Establish database connection and execute query
+    con <- NULL
+    results <- NULL
+    tryCatch({
+      # --- Connect using ODBC ---
+      # Option 1: Using a DSN (if you created one in Step 2)
+      # con <- dbConnect(odbc::odbc(), DSN = db_dsn_name, UID = db_user, PWD = db_password)
+
+      # Option 2: Direct connection (if no DSN, or if you prefer explicit details)
+      con <- dbConnect(
+        odbc::odbc(),
+        Driver = db_driver,
+        Server = db_host,
+        Port = db_port,
+        Service = db_service_name, # or UID, SID depending on your Oracle setup
+        UID = db_user,
+        PWD = db_password
+      )
+
+      # Execute the query with the loan number as a parameter
+      # ODBC uses '?' as a placeholder, and params are passed as a vector or list in dbGetQuery
+      results <- dbGetQuery(con, sql_query, params = list(loan_num)) # Pass loan_num as a list element
+
+      if (is.data.frame(results) && nrow(results) > 0) {
+        loan_data(results)
+        message_text(paste("Successfully retrieved details for Loan Number:", loan_num))
+      } else {
+        loan_data(NULL) # No results found
+        message_text(paste("No details found for Loan Number:", loan_num))
+      }
+
+    }, error = function(e) {
+      message_text(paste("Database Error: ", e$message))
+      warning("Database connection or query failed: ", e$message)
+      loan_data(NULL)
+    }, finally = {
+      if (!is.null(con) && dbIsValid(con)) {
+        dbDisconnect(con)
+      }
+    })
+  })
+
+  # Render the table output
+  output$loanResults <- renderTable({
+    if (!is.null(loan_data())) {
+      loan_data()
+    } else {
+      NULL
+    }
+  }, striped = TRUE, bordered = TRUE, hover = TRUE, na = "")
+
+  # Render the message output
+  output$message <- renderText({
+    message_text()
+  })
+
+}
+
+# --- Run the application ---
+shinyApp(ui = ui, server = server)
+
+Key Changes with odbc:
+ * library(odbc): The package you load.
+ * dbConnect(odbc::odbc(), ...): This is how you initiate the connection.
+   * DSN Option: DSN = "MyOracleDSN" if you've set up an ODBC DSN. This is generally the easiest and most robust method once the DSN is configured.
+   * Direct Connection Option: Driver = "Your Oracle Driver Name", Server = "host", Port = 1521, Service = "service_name", UID = "user", PWD = "password". You must find the exact name of the ODBC driver you installed (e.g., "Oracle in instantclient_19_X"). You can see this in your ODBC Data Source Administrator.
+ * SQL Placeholder: The placeholder for parameters in odbc is usually ?, not :parameter_name. So, WHERE h.LN_DLRY_FNN_LN_ID = ?.
+ * params Argument: When using dbGetQuery with odbc and ? placeholders, you pass the values as a list of values in the order they appear in the query: params = list(loan_num).
+To get this working, your primary focus should be:
+ * Successfully installing the Oracle ODBC driver on your system.
+ * Configuring an ODBC DSN (or finding the exact driver name and connection details) that successfully connects to your Oracle database from outside R.
+ * Updating the db_driver, db_host, db_port, db_service_name (or db_dsn_name) variables in the R code with your correct information.
+ * Changing the WHERE clause placeholder in your sql_query from :loan_num to ?.
