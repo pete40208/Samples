@@ -1,0 +1,116 @@
+# Install required packages if not already installed
+# install.packages(c("shiny", "ROracle", "DBI", "DT"))
+
+library(shiny)
+library(DBI)
+library(ROracle)
+library(DT)
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("Loan Details Viewer (Oracle)"),
+
+  sidebarLayout(
+    sidebarPanel(
+      textInput("loanNumber", "Enter Loan Number:", value = ""),
+      actionButton("submitBtn", "Retrieve Details"),
+      hr(),
+      textOutput("message")
+    ),
+
+    mainPanel(
+      h3("Loan Query Results"),
+      DTOutput("loanResults")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  loan_data <- reactiveVal(NULL)
+  message_text <- reactiveVal("")
+
+  observeEvent(input$submitBtn, {
+    req(input$loanNumber)
+
+    loan_num <- trimws(input$loanNumber)
+
+    if (loan_num == "") {
+      message_text("Please enter a valid loan number.")
+      loan_data(NULL)
+      return()
+    }
+
+    message_text("Retrieving data...")
+
+    tryCatch({
+      drv <- dbDriver("Oracle")
+
+      con <- dbConnect(
+        drv,
+        username = Sys.getenv("USER"),
+        password = Sys.getenv("PASS"),
+        dbname   = Sys.getenv("DSN_BHODOBOP")
+      )
+
+      sql_query <- "
+      WITH
+        Commitype AS (
+          SELECT CMPT_EXCN_TYP_CD AS related_key, CMPT_LGCY_ID AS Commitype
+          FROM BHODOBOP.APPL_LKUP_DTL
+          WHERE APPL_LKUP_CATG_TYP_CD = '40'
+        ),
+        CommitedThru AS (
+          SELECT TRNSP_SRC_CD AS related_key, APPL_LKUP_DTL_CD AS Commited_Thru
+          FROM BHODOBOP.APPL_LKUP_DTL
+          WHERE APPL_LKUP_CATG_TYP_CD = '350'
+        ),
+        SFC_Data AS (
+          SELECT CMPT_AGMT_ID,
+                 LISTAGG(CASE WHEN CMPT_FEAT_TYP_CD = '36' THEN CMPT_FEAT_CD END, ',') 
+                 WITHIN GROUP (ORDER BY CMPT_FEAT_CD) AS SFC
+          FROM CMPT_LOAN_DTL_FEAT
+          WHERE CMPT_AGMT_ID IS NOT NULL
+          GROUP BY CMPT_AGMT_ID
+        ),
+        SFClist_Data AS (
+          SELECT CMPT_AGMT_ID,
+                 LISTAGG(CASE WHEN CMPT_FEAT_TYP_CD = '37' THEN CMPT_FEAT_CD END, ',') 
+                 WITHIN GROUP (ORDER BY CMPT_FEAT_CD) AS SFclist
+          FROM CMPT_LOAN_DTL_FEAT
+          WHERE CMPT_AGMT_ID IS NOT NULL
+          GROUP BY CMPT_AGMT_ID
+        )
+      SELECT
+        h.CMPT_LGCY_ID,
+        d.APPL_LKUP_DTL_DESC AS Product,
+        (SELECT T1.Commitype FROM Commitype T1 WHERE T1.related_key = h.CMPT_EXCN_TYP_CD) AS Commit_Type,
+        (SELECT T2.Commited_Thru FROM CommitedThru T2 WHERE T2.related_key = h.TRNSP_SRC_CD) AS Commited_Thru,
+        d_seller.APPL_LKUP_DTL_DESC AS Seller,
+        h.CMPT_ACNT_ACY_DT AS Commit_Dt,
+        h.CMPT_ORIG_EXPR_DT AS Expiry,
+        h.CMPT_ORIG_ORIG_AMT AS Committed_Amt,
+        h.CMPT_ORIG_APPL_DTL_DESC AS Product_Detail,
+        h.CMPT_BSE_FEE_RT AS Servicing,
+        h.CMPT_PART_NET_GUAR_RT AS NetGfee,
+        CASE
+          WHEN h.CMPT_BSE_FEE_RT IS NOT NULL THEN '0'
+          ELSE d_remit.APPL_LKUP_DTL_CD
+        END AS Remittance,
+        SFC_Data.SFC,
+        SFClist_Data.SFclist,
+        CASE
+          WHEN h.CMPT_PRC_RT IS NOT NULL THEN h.CMPT_PRC_RT
+          WHEN h.CMPT_PRC_RT IS NULL AND h.CMPT_PRC_ADJ_BSE_PRC_RT = '0' THEN 0
+          ELSE h.CMPT_PRC_RT
+        END AS PTR,
+        CASE
+          WHEN d_com.APPL_LKUP_CATG_TYP_CD = '200'
+               AND d_com.APPL_LKUP_DTL_CD = h.CMPT_EXPR_TYP_CD
+          THEN d_com.APPL_LKUP_DTL_DESC
+          ELSE NULL
+        END AS COM_PER,
+        h.LN_DLRY_FNN_LN_ID AS PriceAidDate
+      FROM
+        BHODOBOP.LNM_HIST h
+        LEFT JOIN BHODOBOP.APPL
