@@ -1,0 +1,54 @@
+# Install required packages if not already installed
+# install.packages(c("shiny", "ROracle", "DBI", "DT", "openxlsx"))
+
+library(shiny)
+library(DBI)
+library(ROracle)
+library(DT)
+library(openxlsx)
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("Loan Details Viewer (Oracle)"),
+
+  sidebarLayout(
+    sidebarPanel(
+      textInput("loanNumber", "Enter Loan Number:", value = ""),
+      actionButton("submitBtn", "Retrieve Details"),
+      hr(),
+      textOutput("message"),
+      br(),
+      downloadButton("downloadExcel", "Download as Excel")
+    ),
+
+    mainPanel(
+      h3("Loan Query Results"),
+      DTOutput("loanResults")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  loan_data <- reactiveVal(NULL)
+  message_text <- reactiveVal("")
+
+  observeEvent(input$submitBtn, {
+    req(input$loanNumber)
+
+    loan_num <- trimws(input$loanNumber)
+
+    if (loan_num == "") {
+      message_text("Please enter a valid loan number.")
+      loan_data(NULL)
+      return()
+    }
+
+    message_text("Retrieving data...")
+
+    tryCatch({
+      drv <- dbDriver("Oracle")
+
+      con <- dbConnect(
+        drv,
+        username = Sys.getenv("USER"),
