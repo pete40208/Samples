@@ -1,0 +1,158 @@
+# Loan Details Viewer (Shiny App)
+# Required Libraries
+# install.packages(c("shiny", "ROracle", "DBI"))
+library(shiny)
+library(ROracle)
+library(DBI)
+
+# --- UI Definition ---
+ui <- fluidPage(
+  titlePanel("Loan Details Viewer"),
+  sidebarLayout(
+    sidebarPanel(
+      textInput("loanNumber", "Enter Loan Number:", value = ""),
+      actionButton("submitBtn", "Retrieve Details"),
+      hr(),
+      h4("Message"),
+      textOutput("message")
+    ),
+    mainPanel(
+      h3("Loan Details:"),
+      tableOutput("loanResults")
+    )
+  )
+)
+
+# --- Server Logic ---
+server <- function(input, output, session) {
+  loan_data <- reactiveVal(NULL)
+  message_text <- reactiveVal("")
+
+  observeEvent(input$submitBtn, {
+    req(input$loanNumber)
+    loan_num <- trimws(input$loanNumber)
+
+    if (nchar(loan_num) == 0) {
+      message_text("Please enter a valid loan number.")
+      return()
+    }
+
+    loan_data(NULL)
+    message_text("Retrieving data...")
+
+    conOracle <- NULL
+    results <- NULL
+
+    sql_query <- "
+    WITH
+      Commtype AS (
+        SELECT
+          APPL.CMPPT_EXCN_TYP_CD AS related_key,
+          APPL.CMPPT_LGCY_ID AS Commtype
+        FROM BHODDBOP.APPL_LKUP_DTL APPL
+        WHERE APPL.LKUP_CATG_TYP_CD = '40'
+      ),
+      CommitedThru AS (
+        SELECT
+          APPL.TRNSP_SPC_CD AS related_key,
+          APPL.APPL_LKUP_DTL_CD AS CommitedThru
+        FROM BHODDBOP.APPL_LKUP_DTL APPL
+        WHERE APPL.LKUP_CATG_TYP_CD = '350'
+      ),
+      SFC_36 AS (
+        SELECT
+          CD.CMPPT_AGMT_ID,
+          LISTAGG(CASE WHEN CD.CMPPT_FEAT_TYP_CD = '36' THEN CD.CMPPT_FEAT_CD END, ',') WITHIN GROUP (ORDER BY CD.CMPPT_FEAT_CD) AS SFC
+        FROM CMPT.LOAN_DTL_FEAT CD
+        LEFT JOIN CMPT.AGMT_ID N ON N.CMPPT_AGMT_ID = CD.CMPPT_AGMT_ID
+        WHERE N.CMPPT_AGMT_ID IS NOT NULL
+        GROUP BY CD.CMPPT_AGMT_ID
+      ),
+      SFC_37 AS (
+        SELECT
+          CD.CMPPT_AGMT_ID,
+          LISTAGG(CASE WHEN CD.CMPPT_FEAT_TYP_CD = '37' THEN CD.CMPPT_FEAT_CD END, ',') WITHIN GROUP (ORDER BY CD.CMPPT_FEAT_CD) AS SFClist
+        FROM CMPT.LOAN_DTL_FEAT CD
+        LEFT JOIN CMPT.AGMT_ID N ON N.CMPPT_AGMT_ID = CD.CMPPT_AGMT_ID
+        WHERE N.CMPPT_AGMT_ID IS NOT NULL
+        GROUP BY CD.CMPPT_AGMT_ID
+      )
+    SELECT
+      h.CMPPT_LGCY_ID_DESC AS \"Product\",
+      (SELECT T1.Commtype FROM Commtype T1 WHERE T1.related_key = h.CMPPT_EXCN_TYP_CD) AS \"Commit Type\",
+      (SELECT T2.CommitedThru FROM CommitedThru T2 WHERE T2.related_key = h.TRNSP_SPC_CD) AS \"Commited Thru\",
+      d_seller.APPL_LKUP_DTL_DESC AS \"Seller\",
+      h.CMPPT_EXCN_TYP_CD AS \"Commit Dtl\",
+      h.CMPPT_ORIG_AMT AS \"Orig Amt\",
+      h.CMPPT_ORIG_ORIG_AMT AS \"Commited Amt\",
+      h.CMPPT_ORIG_APPL_DTL_DESC AS \"Product\",
+      h.DYN_RSV_FEE_RT AS \"Servicing\",
+      h.CMPPT_PAB_BEF_EXN_RT AS \"NetRece\",
+      CASE
+        WHEN h.CMPPT_BSE_FEE_RT IS NOT NULL THEN '0'
+        ELSE h.CMPPT_EXPN_RT_DTL_CD
+      END AS \"Remittance\",
+      s36.SFC AS \"SFC\",
+      s37.SFClist AS \"SFClist\",
+      CASE
+        WHEN h.CMPPT_PRC_RT IS NOT NULL THEN h.CMPPT_PRC_RT
+        WHEN h.CMPPT_PRC_RT IS NULL AND h.CMPPT_PRC_ADJ_BSE_PRC_RT = '0' THEN 0
+        ELSE h.CMPPT_PRC_ADJ_BSE_PRC_RT
+      END AS \"PTR\",
+      CASE
+        WHEN d_com.APPL_LKUP_CATG_TYP_CD = '200' AND d_com.APPL_LKUP_DTL_CD = h.CMPPT_EXPN_TYP_CD THEN d_com.APPL_LKUP_DTL_DESC
+        ELSE NULL
+      END AS \"LOAN PERC\",
+      h.LW_DLY_FUM_LN_ID AS \"PriceDateAnd\"
+    FROM BHODDBOP.LOAN_HIST h
+    LEFT JOIN BHODDBOP.APPL_LKUP_DTL d ON h.LM_PROD_CD = d.APPL_LKUP_DTL_CD AND d.APPL_LKUP_CATG_TYP_CD = 'PRODUCT_TYPE_CATEGORY'
+    LEFT JOIN BHODDBOP.APPL_LKUP_DTL d_seller ON h.SELLR_PHTY_ROLE_ID = d_seller.APPL_LKUP_DTL_ID AND d_seller.APPL_LKUP_CATG_TYP_CD = 'SELLER_CATEGORY'
+    LEFT JOIN BHODDBOP.APPL_LKUP_DTL d_remit ON h.LMT_TYP_CD = d_remit.APPL_LKUP_DTL_ID AND d_remit.APPL_LKUP_CATG_TYP_CD = 'PAYMENT_TYPE_CATEGORY'
+    LEFT JOIN BHODDBOP.APPL_LKUP_DTL d_com ON h.CMPPT_EXPN_TYP_CD = d_com.APPL_LKUP_DTL_CD AND d_com.APPL_LKUP_CATG_TYP_CD = '200'
+    LEFT JOIN SFC_36 s36 ON h.CMPPT_AGMT_ID = s36.CMPPT_AGMT_ID
+    LEFT JOIN SFC_37 s37 ON h.CMPPT_AGMT_ID = s37.CMPPT_AGMT_ID
+    WHERE h.LN_DLY_FUM_LN_ID = :loan_num"
+
+    tryCatch({
+      db <- "POBHOC1"
+      conOracle <- dbConnect(ROracle::Oracle(),
+                             username = Sys.getenv("user"),
+                             password = Sys.getenv("pass_oracle"),
+                             dbname = paste0(db, "_SSL.WORLD"))
+
+      stmt <- dbSendQuery(conOracle, sql_query)
+
+      # Ensure VARCHAR binding with appropriate length
+      dbBind(stmt, list(loan_num = as.character(substr(loan_num, 1, 50))))
+
+      results <- dbFetch(stmt)
+      dbClearResult(stmt)
+
+      if (is.data.frame(results) && nrow(results) > 0) {
+        loan_data(results)
+        message_text(paste0("Successfully retrieved details for Loan Number: ", loan_num))
+      } else {
+        message_text("No results found.")
+      }
+
+    }, error = function(e) {
+      message_text(paste0("Database Error: ", e$message))
+      loan_data(NULL)
+    }, finally = {
+      if (!is.null(conOracle) && dbIsValid(conOracle)) {
+        dbDisconnect(conOracle)
+      }
+    })
+  })
+
+  output$loanResults <- renderTable({
+    loan_data()
+  }, striped = TRUE, bordered = TRUE, hover = TRUE, na = "")
+
+  output$message <- renderText({
+    message_text()
+  })
+}
+
+# Run the App
+shinyApp(ui = ui, server = server)
