@@ -1,0 +1,55 @@
+# ---- Install these packages only once ----
+install.packages(c("readxl", "dplyr", "ggplot2", "gganimate", "tidyr", "gifski", "scales"))
+
+# ---- Load Libraries ----
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(gganimate)
+library(tidyr)
+library(gifski)
+library(scales)
+
+# ---- Read Data from Excel ----
+file_path <- "~/Desktop/Top 10 CRA Sellers CA.xlsx"  # Adjust path if needed
+df <- read_excel(file_path)
+
+# ---- Convert FundYr_Month to Date ----
+df <- df %>%
+  mutate(FundYr_Month = as.Date(paste0(FundYr_Month, "-01")))
+
+# ---- Rank Sellers by UPB for Each Month ----
+ranked_data <- df %>%
+  group_by(FundYr_Month) %>%
+  arrange(desc(UPB)) %>%
+  mutate(rank = row_number()) %>%
+  filter(rank <= 10) %>%
+  ungroup()
+
+# ---- Create the Animated Plot ----
+p <- ggplot(ranked_data, aes(x = -rank, y = UPB, fill = `Seller Name`)) +
+  geom_col(width = 0.8) +
+  geom_text(aes(y = 0, label = `Seller Name`), hjust = 1, color = "white", size = 5) +
+  geom_text(aes(label = dollar(UPB)), hjust = -0.1, size = 4) +
+  coord_flip(clip = "off", expand = FALSE) +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_x_continuous(breaks = NULL) +
+  labs(
+    title = "Top 10 CRA Sellers in CA",
+    subtitle = "Month: {format(frame_time, '%b %Y')}",
+    x = "", y = "",
+    caption = "Source: Top 10 CRA Sellers CA.xlsx"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.y = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(1, 2, 1, 4, "cm")
+  ) +
+  transition_time(FundYr_Month) +
+  ease_aes('cubic-in-out')
+
+# ---- Save Animation to GIF ----
+animate(p, nframes = 150, fps = 10, width = 900, height = 600,
+        renderer = gifski_renderer("~/Desktop/seller_racing_chart.gif"))
